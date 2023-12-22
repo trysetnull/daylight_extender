@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1
+
+ARG VARIANT="bookworm"
+FROM rust:slim-${VARIANT}
+
+ENV DEBIAN_FRONTEND noninteractive
+
+ARG USERNAME=cross-compile
+ARG USER_UID=${USER_UID:-1000}
+ARG USER_GID=${USER_GID:-$USER_UID}
+
+RUN <<EOT
+    dpkg --add-architecture arm64
+
+    apt-get update
+    apt-get upgrade -y
+    apt-get install -y \
+        g++-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
+        libssl-dev:arm64 \
+        openssl:arm64 \
+        sudo
+
+    apt-get clean autoclean
+    rm -rf /var/lib/{apt,dpkg,cache,log}
+
+    rustup target add aarch64-unknown-linux-gnu
+    rustup toolchain install stable-aarch64-unknown-linux-gnu
+
+    groupadd --gid ${USER_GID} ${USERNAME}
+    useradd \
+       --uid ${USER_UID} \
+       --gid ${USER_GID} \
+       --shell /bin/bash \
+       --create-home \
+       ${USERNAME}
+    echo ${USERNAME} ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/${USERNAME}
+    chmod 0440 /etc/sudoers.d/${USERNAME}
+EOT
+
+COPY <<EOF /.cargo/config.toml
+[env]
+"AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR" = "/usr/lib/aarch64-linux-gnu"
+"AARCH64_UNKNOWN_LINUX_GNU_OPENSSL_INCLUDE_DIR" = "/usr/include/openssl"
+"CC_aarch64_unknown_linux_gnu" = "aarch64-linux-gnu-gcc"
+"CXX_aarch64_unknown_linux_gnu" = "aarch64-linux-gnu-g++"
+
+[profile.release]
+strip = "symbols"
+
+[profile.release-prod]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+opt-level = "z"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+EOF
+
+WORKDIR /home/${USERNAME}
+
+USER ${USERNAME}
+
+CMD ["cargo", "build", "--profile", "release-prod", "--target", "aarch64-unknown-linux-gnu"]
